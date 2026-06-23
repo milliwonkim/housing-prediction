@@ -8,11 +8,13 @@ import {
   Sparkles, TrendingUp, Users, X,
 } from "lucide-react";
 import { ListingsPanel, TrendChart, type MarketListing } from "@/components/trend-chart";
-import { ChartSeries } from "@/components/chart-series";
+import { filterTransactionsByPeriod, TransactionList } from "@/components/transaction-list";
+import { TransactionPriceChart } from "@/components/transaction-price-chart";
 import { openKakaoAddressSearch, type KakaoAddressSelection } from "@/lib/kakao-postcode";
 import { PredictionSummaryCard } from "@/components/prediction-summary-card";
-import { type AreaTypeSnapshot, formatAreaTypeLabel } from "@/lib/area-type";
+import { type AreaTypeSnapshot } from "@/lib/area-type";
 import { buildPredictionSummary } from "@/lib/prediction-summary";
+import { withSampleAreaLabel } from "@/lib/sample-transactions";
 
 type Signal = { label: string; value: string; change: string; score: number; tone: "up" | "down" | "neutral"; icon: typeof Activity; note: string };
 type SupplySignal = { households: number | null; projectCount: number; error?: string };
@@ -37,10 +39,7 @@ type Apartment = {
 };
 
 const MONTH_LABELS = ["7월", "8월", "9월", "10월", "11월", "12월", "1월", "2월", "3월", "4월", "5월", "6월"];
-
-function makeSampleArea(snapshot: Omit<AreaTypeSnapshot, "label">): AreaTypeSnapshot {
-  return { ...snapshot, label: formatAreaTypeLabel(snapshot.areaKey) };
-}
+type PricePeriod = "3m" | "1y" | "3y";
 
 const apartments: Apartment[] = [
   {
@@ -52,7 +51,7 @@ const apartments: Apartment[] = [
     supply: { households: 1240, projectCount: 3 },
     dataSource: "sample",
     areaTypes: [
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 59,
         transactionCount: 8,
         price: "29억 2,000만",
@@ -70,7 +69,7 @@ const apartments: Apartment[] = [
         area: "59.8㎡",
         signals: { transactionCount: 5, volumeChange: 25, latestDate: "2026. 05. 29", latestFloor: 7, totalCount: 8, rent: { ratio: 60.1, count: 3, latestDeposit: 175000 } },
       }),
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 84,
         transactionCount: 18,
         price: "41억 8,000만",
@@ -88,7 +87,7 @@ const apartments: Apartment[] = [
         area: "84.9㎡",
         signals: { transactionCount: 8, volumeChange: 38, latestDate: "2026. 06. 18", latestFloor: 18, totalCount: 18, rent: { ratio: 54.2, count: 6, latestDeposit: 228000 } },
       }),
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 114,
         transactionCount: 6,
         price: "56억",
@@ -117,7 +116,7 @@ const apartments: Apartment[] = [
     supply: { households: 2890, projectCount: 5 },
     dataSource: "sample",
     areaTypes: [
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 59,
         transactionCount: 24,
         price: "17억 2,000만",
@@ -134,7 +133,7 @@ const apartments: Apartment[] = [
         area: "59.9㎡",
         signals: { transactionCount: 12, volumeChange: 15, latestDate: "2026. 05. 30", latestFloor: 6, totalCount: 24, rent: { ratio: 63.5, count: 8, latestDeposit: 109000 } },
       }),
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 84,
         transactionCount: 32,
         price: "23억 5,000만",
@@ -163,7 +162,7 @@ const apartments: Apartment[] = [
     supply: { households: 980, projectCount: 2 },
     dataSource: "sample",
     areaTypes: [
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 84,
         transactionCount: 14,
         price: "44억 2,000만",
@@ -181,7 +180,7 @@ const apartments: Apartment[] = [
         area: "84.6㎡",
         signals: { transactionCount: 7, volumeChange: 55, latestDate: "2026. 06. 20", latestFloor: 20, totalCount: 14, rent: { ratio: 51.6, count: 4, latestDeposit: 230000 } },
       }),
-      makeSampleArea({
+      withSampleAreaLabel({
         areaKey: 101,
         transactionCount: 5,
         price: "52억 3,000만",
@@ -285,20 +284,6 @@ function createPendingApartment(name: string, address: string, lawdCode?: string
   };
 }
 
-function PriceChart({ values, labels }: { values: number[]; labels: string[] }) {
-  return (
-    <ChartSeries
-      values={values}
-      labels={labels}
-      variant="line"
-      unit="억"
-      color="#2f67ed"
-      gradientId="price-area"
-      ariaLabel="최근 1년 실거래가 추이"
-    />
-  );
-}
-
 function ScoreRing({ score }: { score: number }) {
   const circumference = 2 * Math.PI * 46;
   return <div className="score-ring"><svg viewBox="0 0 108 108"><circle cx="54" cy="54" r="46" className="ring-bg"/><circle cx="54" cy="54" r="46" className="ring-value" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - score / 100)} /></svg><div><strong>{score}</strong><span>/100</span></div></div>;
@@ -346,6 +331,7 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
   const [apartmentOptions, setApartmentOptions] = useState(() => apartments.some((item) => item.id === restoredApartment.id) ? apartments : [...apartments, restoredApartment]);
   const [selectedId, setSelectedId] = useState(restoredApartment.id);
   const [selectedAreaKey, setSelectedAreaKey] = useState(restoredApartment.defaultAreaKey);
+  const [pricePeriod, setPricePeriod] = useState<PricePeriod>("1y");
   const [searchQuery, setSearchQuery] = useState(restoredApartment.name);
   const [selectedAddress, setSelectedAddress] = useState<KakaoAddressSelection | null>(() => {
     if (initialSelection?.lawdCode && initialSelection.address !== "주소 정보 미등록") {
@@ -380,6 +366,10 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
     if (!activeArea) return null;
     return buildPredictionSummary(activeArea, apartment.supply);
   }, [activeArea, apartment.supply]);
+  const filteredSaleTransactions = useMemo(() => {
+    if (!activeArea) return [];
+    return filterTransactionsByPeriod(activeArea.saleTransactions, pricePeriod);
+  }, [activeArea, pricePeriod]);
 
   useEffect(() => {
     if (!detailPanel) return;
@@ -400,6 +390,7 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
   const selectApartment = (item: Apartment) => {
     setSelectedId(item.id);
     setSelectedAreaKey(item.defaultAreaKey);
+    setPricePeriod("1y");
     setSearchQuery(item.name);
     setSelectedAddress(
       item.lawdCode && item.address !== "주소 정보 미등록"
@@ -554,7 +545,48 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
 
       <section className="summary-grid">
         <article className="forecast-card"><div className="card-heading"><span>{apartment.dataSource === "molit" ? "실거래 흐름 점수" : "AI 상승 가능성"}</span><button aria-label="산정 기준 도움말"><CircleHelp size={17}/></button></div><div className="forecast-body"><ScoreRing score={activeArea?.score ?? 0}/><div className="forecast-copy"><span className="status"><TrendingUp size={15}/>{activeArea?.forecast ?? "분석 대기"}</span><h2>{apartment.dataSource === "molit" ? "최근 12개월" : "향후 6개월"}<br/><em>{isPending ? "실거래 데이터를 불러오는 중이에요" : apartment.dataSource === "molit" ? "신고 가격 흐름을 반영했어요" : (activeArea?.score ?? 0) >= 80 ? "상승 가능성이 높아요" : "상승 가능성이 우세해요"}</em></h2><p>신뢰도 <b>{activeArea?.confidence ?? "대기"}</b> · {isPending ? "분석 데이터 대기 중" : apartment.dataSource === "molit" ? "국토교통부 신고 자료 기반" : "12개 핵심 지표 분석"}</p></div></div><div className="summary-note"><Sparkles size={16}/><p><b>핵심 요약</b> {isPending ? "선택한 단지의 최근 12개월 실거래가를 조회하고 있어요." : apartment.dataSource === "molit" ? `${activeArea?.label ?? "선택 평형"} 기준으로 매매 실거래가와 거래량을 계산하고, 전세가율과 향후 입주 물량은 보조 지표로 함께 표시합니다.` : "거래 회복과 매물 감소가 동시에 나타나고 있어요. 다만 금리와 주변 공급 계획은 계속 확인하세요."}</p></div></article>
-        <article className="price-card"><div className="price-head"><div><span>최근 실거래가 {activeArea ? `· ${activeArea.label}` : ""}</span><h2>{isPending ? (isLoading ? "실거래 조회 중" : "데이터 연결 전") : activeArea?.price}{isPending ? "" : "원"}</h2>{isPending ? <p>{isLoading ? "국토교통부 자료 조회 중이에요." : apartment.dataError || "아직 연결된 실거래가 없어요."}</p> : <p><b><ArrowUpRight size={14}/>{activeArea?.delta}</b> 12개월 첫 거래 대비</p>}</div>{isPending ? null : <Tabs.Root defaultValue="1y"><Tabs.List className="period-tabs"><Tabs.Tab value="3m">3개월</Tabs.Tab><Tabs.Tab value="1y">1년</Tabs.Tab><Tabs.Tab value="3y">3년</Tabs.Tab><Tabs.Indicator/></Tabs.List></Tabs.Root>}</div>{isPending ? <div className="chart-empty"><Building2 size={26}/><b>{isLoading ? "실거래가 조회 중" : "실거래 데이터를 연결하지 못했어요"}</b><span>{apartment.dataError || "공공데이터 API 설정을 확인해 주세요."}</span></div> : <PriceChart values={activeArea?.chart ?? []} labels={apartment.monthLabels}/>}</article>
+        <article className="price-card">
+          <div className="price-head">
+            <div>
+              <span>최근 실거래가 {activeArea ? `· ${activeArea.label}` : ""}{!isPending && filteredSaleTransactions.length ? ` · ${filteredSaleTransactions.length}건` : ""}</span>
+              <h2>{isPending ? (isLoading ? "실거래 조회 중" : "데이터 연결 전") : activeArea?.price}{isPending ? "" : "원"}</h2>
+              {isPending ? (
+                <p>{isLoading ? "국토교통부 자료 조회 중이에요." : apartment.dataError || "아직 연결된 실거래가 없어요."}</p>
+              ) : (
+                <p><b><ArrowUpRight size={14}/>{activeArea?.delta}</b> 12개월 첫 거래 대비 · 건별 신고가</p>
+              )}
+            </div>
+            {isPending ? null : (
+              <Tabs.Root value={pricePeriod} onValueChange={(value) => setPricePeriod(value as PricePeriod)}>
+                <Tabs.List className="period-tabs">
+                  <Tabs.Tab value="3m">3개월</Tabs.Tab>
+                  <Tabs.Tab value="1y">1년</Tabs.Tab>
+                  <Tabs.Tab value="3y">3년</Tabs.Tab>
+                  <Tabs.Indicator/>
+                </Tabs.List>
+              </Tabs.Root>
+            )}
+          </div>
+          {isPending ? (
+            <div className="chart-empty">
+              <Building2 size={26}/>
+              <b>{isLoading ? "실거래가 조회 중" : "실거래 데이터를 연결하지 못했어요"}</b>
+              <span>{apartment.dataError || "공공데이터 API 설정을 확인해 주세요."}</span>
+            </div>
+          ) : (
+            <div className="price-card__body">
+              <TransactionPriceChart
+                transactions={filteredSaleTransactions}
+                gradientId={`tx-price-${apartment.id}-${selectedAreaKey}`}
+              />
+              <TransactionList
+                transactions={filteredSaleTransactions}
+                dataSource={apartment.dataSource}
+                compact
+              />
+            </div>
+          )}
+        </article>
       </section>
 
       <section className="trends-section">
@@ -644,7 +676,7 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
         ) : null}
         <h3>시장 신호</h3>
         <ul>{displaySignals.map((signal) => <li key={signal.label}><b>{signal.label} · {signal.value}</b><span>{signal.note}</span></li>)}</ul>
-        <div className="detail-notice">{apartment.dataSource === "molit" ? "예측은 최근 12개월 신고가·거래량·전세가율·입주 물량을 통계적으로 반영합니다. 신고가 돌파 시점은 월별 추세선이 12개월 최고가를 넘는 시점으로 추정합니다." : "현재 선택한 기본 단지는 프로토타입 샘플 데이터로 분석됩니다."}</div>
+        <div className="detail-notice">{apartment.dataSource === "molit" ? "예측은 최근 12개월 신고가·거래량·전세가율·입주 물량을 통계적으로 반영합니다. 신고가 돌파는 1건의 매매 거래가 기준 신고가(단일 거래 최고가)를 초과할 때로 정의합니다." : "현재 선택한 기본 단지는 프로토타입 샘플 데이터로 분석됩니다."}</div>
       </div>
     </section></div> : null}
     {alerted ? <div className="toast"><Check size={16}/><span>가격 신호가 바뀌면 알려드릴게요.</span><button onClick={() => setAlerted(false)} aria-label="닫기"><X size={16}/></button></div> : null}

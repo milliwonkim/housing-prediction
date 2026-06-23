@@ -120,13 +120,14 @@ export function PredictionSummaryCard({
         </div>
         <p>{prediction.breakthrough.sentence}</p>
         <div className="prediction-breakthrough__chips">
-          <span>12개월 최고 {prediction.breakthrough.peakPriceLabel}</span>
-          <span>{prediction.breakthrough.peakPeriodLabel} 형성</span>
+          <span>기준 신고가 {prediction.breakthrough.referencePriceLabel}</span>
+          <span>{prediction.breakthrough.referenceDate} 1건 형성</span>
+          <span>최근 1건 {prediction.breakthrough.latestDealPriceLabel}</span>
           {prediction.breakthrough.breakthroughMonths ? (
-            <span>돌파까지 약 {prediction.breakthrough.breakthroughMonths}개월</span>
+            <span>1건 돌파까지 약 {prediction.breakthrough.breakthroughMonths}개월</span>
           ) : null}
           {prediction.breakthrough.status === "already_broken" ? (
-            <span>현재 신고가 갱신 구간</span>
+            <span>최근 1건 신고가 갱신</span>
           ) : null}
         </div>
       </div>

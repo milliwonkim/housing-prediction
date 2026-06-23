@@ -1,4 +1,4 @@
-import type { AreaTypeSnapshot } from "@/lib/area-type";
+import type { AreaTypeSnapshot, SaleTransactionRecord } from "@/lib/area-type";
 import { formatAmountManwon } from "@/lib/format-amount";
 
 export type PredictionDirection = "상승" | "하락" | "보합";
@@ -12,12 +12,18 @@ export type StatEvidence = {
   note: string;
 };
 
-export type BreakthroughStatus = "already_broken" | "approaching" | "unlikely" | "at_peak";
+export type BreakthroughStatus =
+  | "already_broken"
+  | "approaching"
+  | "unlikely"
+  | "at_record";
 
 export type BreakthroughForecast = {
   status: BreakthroughStatus;
-  peakPriceLabel: string;
-  peakPeriodLabel: string;
+  referencePriceLabel: string;
+  referenceDate: string;
+  latestDealPriceLabel: string;
+  latestDealDate: string;
   gapPercent: number;
   breakthroughPeriodLabel: string | null;
   breakthroughMonths: number | null;
@@ -46,6 +52,15 @@ type SupplyContext = {
   projectCount: number;
 };
 
+type RecordAnalysis = {
+  recordAmount: number;
+  recordPriceLabel: string;
+  recordDate: string;
+  latest: SaleTransactionRecord;
+  maxBeforeLatest: number;
+  hasLatestBrokenRecord: boolean;
+};
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -60,22 +75,55 @@ function formatPeriod(date: Date): string {
   return `${date.getFullYear()}년 ${date.getMonth() + 1}월`;
 }
 
-function periodLabelFromIndex(index: number, chartLength: number, now: Date): string {
-  const monthsAgo = chartLength - 1 - index;
-  const date = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1);
-  return formatPeriod(date);
-}
-
 function parseDeltaPercent(delta: string): number {
   const match = delta.match(/[+-]?[\d.]+/);
   return match ? Number(match[0]) : 0;
 }
 
+function monthlyMaxDealTrend(transactions: SaleTransactionRecord[]): number {
+  const buckets = new Map<number, number>();
+  for (const tx of transactions) {
+    const date = new Date(tx.timestamp);
+    const key = date.getFullYear() * 100 + (date.getMonth() + 1);
+    buckets.set(key, Math.max(buckets.get(key) ?? 0, tx.amount));
+  }
+  const ordered = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([, value]) => value);
+  if (ordered.length < 2) return 0;
+  const slice = ordered.slice(-4);
+  return (slice.at(-1)! - slice[0]) / (slice.length - 1);
+}
+
+function analyzeRecordTransactions(transactions: SaleTransactionRecord[]): RecordAnalysis | null {
+  if (!transactions.length) return null;
+
+  const sorted = [...transactions].sort((a, b) => a.timestamp - b.timestamp);
+  const latest = sorted.at(-1)!;
+  const beforeLatest = sorted.slice(0, -1);
+  const maxBeforeLatest = beforeLatest.length ? Math.max(...beforeLatest.map((item) => item.amount)) : 0;
+
+  let recordAmount = 0;
+  let recordDate = latest.date;
+  for (const tx of sorted) {
+    if (tx.amount > recordAmount) {
+      recordAmount = tx.amount;
+      recordDate = tx.date;
+    }
+  }
+
+  return {
+    recordAmount,
+    recordPriceLabel: formatAmountManwon(recordAmount),
+    recordDate,
+    latest,
+    maxBeforeLatest,
+    hasLatestBrokenRecord: latest.amount > maxBeforeLatest,
+  };
+}
+
 function buildStatistics(
   area: AreaTypeSnapshot,
   supply: SupplyContext,
-  peakPriceLabel: string,
-  gapPercent: number,
+  record: RecordAnalysis | null,
 ): StatEvidence[] {
   const chart = area.chart;
   const recentTrendPct = chart.length >= 4 && chart.at(-4)! > 0
@@ -83,6 +131,11 @@ function buildStatistics(
     : 0;
   const yearlyChange = parseDeltaPercent(area.delta);
   const rentRatio = area.signals.rent.ratio;
+
+  const recordPriceLabel = record?.recordPriceLabel ?? "—";
+  const gapPercent = record && record.recordAmount > 0
+    ? Number((((record.latest.amount - record.recordAmount) / record.recordAmount) * 100).toFixed(1))
+    : 0;
 
   return [
     {
@@ -129,11 +182,13 @@ function buildStatistics(
     },
     {
       id: "peak-gap",
-      label: "최고 신고가 대비",
+      label: "기준 신고가 대비",
       value: `${gapPercent >= 0 ? "+" : ""}${gapPercent.toFixed(1)}%`,
       impact: gapPercent >= 0 ? "positive" : gapPercent > -5 ? "neutral" : "negative",
       weight: 14,
-      note: `12개월 최고 ${peakPriceLabel} 대비 현재가`,
+      note: record
+        ? `최근 1건 ${record.latest.priceLabel} · 기준 신고가 ${recordPriceLabel}(단일 거래 최고가)`
+        : "거래 데이터 없음",
     },
     {
       id: "flow-score",
@@ -158,67 +213,109 @@ function buildStatistics(
 
 function buildBreakthroughForecast(
   area: AreaTypeSnapshot,
-  chart: number[],
-  currentEok: number,
-  trendPerMonth: number,
+  transactions: SaleTransactionRecord[],
   now: Date,
 ): BreakthroughForecast {
-  const peakEok = Math.max(...chart);
-  const peakIndex = chart.indexOf(peakEok);
-  const peakPriceLabel = formatAmountManwon(Math.round(peakEok * 10000));
-  const peakPeriodLabel = periodLabelFromIndex(peakIndex, chart.length, now);
-  const gapPercent = peakEok > 0 ? Number((((currentEok - peakEok) / peakEok) * 100).toFixed(1)) : 0;
-  const isCurrentPeak = Math.abs(currentEok - peakEok) < 0.02;
+  const empty: BreakthroughForecast = {
+    status: "unlikely",
+    referencePriceLabel: "—",
+    referenceDate: "—",
+    latestDealPriceLabel: area.price,
+    latestDealDate: area.signals.latestDate,
+    gapPercent: 0,
+    breakthroughPeriodLabel: null,
+    breakthroughMonths: null,
+    breakthroughPriceLabel: "—",
+    sentence: "매매 거래 표본이 없어 신고가 돌파 시점을 추정하지 못했어요.",
+  };
 
-  if (isCurrentPeak) {
-    const nextTargetEok = currentEok * 1.03;
-    const breakthroughPriceLabel = formatAmountManwon(Math.round(nextTargetEok * 10000));
-    const breakthroughMonths = trendPerMonth > 0.02
-      ? Math.max(1, Math.ceil((nextTargetEok - currentEok) / trendPerMonth))
+  const record = analyzeRecordTransactions(transactions);
+  if (!record) return empty;
+
+  const dealTrendPerMonth = monthlyMaxDealTrend(transactions);
+  const referencePriceLabel = record.recordPriceLabel;
+  const referenceDate = record.recordDate;
+  const latestDealPriceLabel = record.latest.priceLabel;
+  const latestDealDate = record.latest.date;
+  const gapPercent = record.recordAmount > 0
+    ? Number((((record.latest.amount - record.recordAmount) / record.recordAmount) * 100).toFixed(1))
+    : 0;
+
+  const nextBreakthroughAmount = record.recordAmount + 1;
+  const breakthroughPriceLabel = formatAmountManwon(nextBreakthroughAmount);
+
+  if (record.hasLatestBrokenRecord) {
+    const previousReferenceLabel = record.maxBeforeLatest > 0
+      ? formatAmountManwon(record.maxBeforeLatest)
+      : null;
+    const breakthroughMonths = dealTrendPerMonth > 0
+      ? Math.max(1, Math.ceil((nextBreakthroughAmount - record.latest.amount) / dealTrendPerMonth))
       : null;
     const breakthroughPeriodLabel = breakthroughMonths
       ? formatPeriod(new Date(now.getFullYear(), now.getMonth() + breakthroughMonths, 1))
       : null;
 
     return {
-      status: peakIndex === chart.length - 1 ? "already_broken" : "at_peak",
-      peakPriceLabel,
-      peakPeriodLabel,
+      status: "already_broken",
+      referencePriceLabel,
+      referenceDate,
+      latestDealPriceLabel,
+      latestDealDate,
       gapPercent: 0,
       breakthroughPeriodLabel,
       breakthroughMonths,
       breakthroughPriceLabel,
-      sentence: peakIndex === chart.length - 1
-        ? `현재 ${area.price}이(가) 최근 12개월 최고 신고가예요.${breakthroughPeriodLabel ? ` 다음 구간(${breakthroughPriceLabel}) 돌파는 ${breakthroughPeriodLabel}경(${breakthroughMonths}개월 후)으로 추정돼요.` : " 다음 구간 돌파는 추가 거래 데이터가 필요해요."}`
-        : `${peakPeriodLabel}에 형성된 최고 신고가 ${peakPriceLabel}와 동일한 수준이에요. 추가 상승 시 신고가 갱신이 이어질 수 있어요.`,
+      sentence: previousReferenceLabel
+        ? `${latestDealDate} ${latestDealPriceLabel} 1건이 이전 신고가 ${previousReferenceLabel}을(를) 돌파해 ${referencePriceLabel}으로 갱신됐어요.${breakthroughPeriodLabel ? ` 다음 돌파(1건이 ${breakthroughPriceLabel} 초과)는 ${breakthroughPeriodLabel}경(약 ${breakthroughMonths}개월 후)으로 추정돼요.` : " 다음 돌파 시점은 추가 거래 데이터가 필요해요."}`
+        : `${latestDealDate} ${latestDealPriceLabel} 1건이 현재 기준 신고가예요.${breakthroughPeriodLabel ? ` 다음 돌파(1건이 ${breakthroughPriceLabel} 초과)는 ${breakthroughPeriodLabel}경(약 ${breakthroughMonths}개월 후)으로 추정돼요.` : ""}`,
     };
   }
 
-  if (trendPerMonth > 0.02) {
-    const monthsToBreak = Math.max(1, Math.ceil((peakEok - currentEok) / trendPerMonth));
+  if (record.latest.amount >= record.recordAmount) {
+    return {
+      status: "at_record",
+      referencePriceLabel,
+      referenceDate,
+      latestDealPriceLabel,
+      latestDealDate,
+      gapPercent: 0,
+      breakthroughPeriodLabel: null,
+      breakthroughMonths: null,
+      breakthroughPriceLabel,
+      sentence: `최근 1건 ${latestDealPriceLabel}(${latestDealDate})이(가) 기준 신고가 ${referencePriceLabel}(${referenceDate} 형성)과 같아요. 1건이라도 ${breakthroughPriceLabel}을(를) 넘기면 신고가가 돌파돼요.`,
+    };
+  }
+
+  if (dealTrendPerMonth > 0) {
+    const gapAmount = nextBreakthroughAmount - record.latest.amount;
+    const monthsToBreak = Math.max(1, Math.ceil(gapAmount / dealTrendPerMonth));
     const breakthroughPeriodLabel = formatPeriod(new Date(now.getFullYear(), now.getMonth() + monthsToBreak, 1));
 
     return {
       status: monthsToBreak <= 8 ? "approaching" : "approaching",
-      peakPriceLabel,
-      peakPeriodLabel,
+      referencePriceLabel,
+      referenceDate,
+      latestDealPriceLabel,
+      latestDealDate,
       gapPercent,
       breakthroughPeriodLabel,
       breakthroughMonths: monthsToBreak,
-      breakthroughPriceLabel: peakPriceLabel,
-      sentence: `최근 12개월 최고 신고가 ${peakPriceLabel}(${peakPeriodLabel}) 돌파 예상 시점은 ${breakthroughPeriodLabel}경, 약 ${monthsToBreak}개월 후예요. 현재가는 최고가 대비 ${Math.abs(gapPercent).toFixed(1)}% 낮아요.`,
+      breakthroughPriceLabel,
+      sentence: `기준 신고가는 ${referencePriceLabel}(${referenceDate} 1건)이에요. 최근 1건 ${latestDealPriceLabel}이(가) ${Math.abs(gapPercent).toFixed(1)}% 낮아, 1건이라도 ${breakthroughPriceLabel}을(를) 넘기면 돌파예요. 예상 시점은 ${breakthroughPeriodLabel}경(약 ${monthsToBreak}개월 후)입니다.`,
     };
   }
 
   return {
     status: "unlikely",
-    peakPriceLabel,
-    peakPeriodLabel,
+    referencePriceLabel,
+    referenceDate,
+    latestDealPriceLabel,
+    latestDealDate,
     gapPercent,
     breakthroughPeriodLabel: null,
     breakthroughMonths: null,
-    breakthroughPriceLabel: peakPriceLabel,
-    sentence: `최고 신고가 ${peakPriceLabel}(${peakPeriodLabel}) 대비 ${Math.abs(gapPercent).toFixed(1)}% 낮아요. 현재 하락·보합 추세라 단기 돌파 가능성은 낮게 보여요.`,
+    breakthroughPriceLabel,
+    sentence: `기준 신고가 ${referencePriceLabel}(${referenceDate} 1건) 대비 최근 1건 ${latestDealPriceLabel}이(가) ${Math.abs(gapPercent).toFixed(1)}% 낮아요. 단일 거래가 상승 추세가 약해 단기 돌파 가능성은 낮게 보여요.`,
   };
 }
 
@@ -247,9 +344,7 @@ export function buildPredictionSummary(
     ? Number((((projectedEok - currentEok) / currentEok) * 100).toFixed(1))
     : 0;
 
-  const peakEok = Math.max(...chart);
-  const gapPercent = peakEok > 0 ? Number((((currentEok - peakEok) / peakEok) * 100).toFixed(1)) : 0;
-  const peakPriceLabel = formatAmountManwon(Math.round(peakEok * 10000));
+  const record = analyzeRecordTransactions(area.saleTransactions);
 
   let probability = area.score;
   if (direction === "상승") {
@@ -287,7 +382,7 @@ export function buildPredictionSummary(
 
   const detail =
     direction === "상승"
-      ? `최근 실거래 추세·거래량·전세가율·주변 공급을 반영해 ${horizonMonths}개월 뒤 가격을 추정했어요.`
+      ? `최근 실거래 추세·거래량·전세가율·주변 공급을 반영해 ${horizonMonths}개월 뒤 가격을 추정했어요. 신고가 돌파는 1건이라도 기준가를 넘을 때로 판단합니다.`
       : direction === "하락"
         ? `최근 실거래가 하락 흐름이 감지돼 단기 상승 가능성은 낮게 산출됐어요.`
         : `뚜렷한 상승·하락 신호 없이 횡보할 가능성이 커요.`;
@@ -301,9 +396,10 @@ export function buildPredictionSummary(
   if (supply.households !== null && supply.households < 1000) factors.push("공급 제한");
   if (area.confidence === "높음") factors.push("거래 표본 충분");
   if (area.confidence === "낮음") factors.push("거래 표본 부족");
+  if (record?.hasLatestBrokenRecord) factors.push("최근 1건 신고가 갱신");
 
-  const statistics = buildStatistics(area, supply, peakPriceLabel, gapPercent);
-  const breakthrough = buildBreakthroughForecast(area, chart, currentEok, trendPerMonth, now);
+  const statistics = buildStatistics(area, supply, record);
+  const breakthrough = buildBreakthroughForecast(area, area.saleTransactions, now);
 
   return {
     direction,

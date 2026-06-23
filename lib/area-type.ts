@@ -1,5 +1,15 @@
 export const AREA_TOLERANCE = 2.5;
 
+export type SaleTransactionRecord = {
+  id: string;
+  amount: number;
+  priceLabel: string;
+  area: number;
+  floor: number;
+  date: string;
+  timestamp: number;
+};
+
 export type AreaTypeSnapshot = {
   areaKey: number;
   label: string;
@@ -12,6 +22,7 @@ export type AreaTypeSnapshot = {
   chart: number[];
   volumeChart: number[];
   rentRatioChart: number[];
+  saleTransactions: SaleTransactionRecord[];
   listings: Array<{
     id: string;
     dealType: "매매" | "전세" | "월세";

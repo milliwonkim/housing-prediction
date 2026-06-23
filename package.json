@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@base-ui/react": "latest",
+    "@tanstack/react-virtual": "^3.14.3",
     "lucide-react": "latest",
     "next": "latest",
     "react": "latest",

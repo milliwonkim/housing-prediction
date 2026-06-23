@@ -114,6 +114,18 @@ export function buildAreaSnapshot({
     };
   }
 
+  const saleTransactions = sales
+    .map((item) => ({
+      id: `sale-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.floor}-${item.amount}`,
+      amount: item.amount,
+      priceLabel: formatAmount(item.amount),
+      area: item.area,
+      floor: item.floor,
+      date: formatDate(item.year, item.month, item.day),
+      timestamp: new Date(item.year, item.month - 1, item.day).getTime(),
+    }))
+    .sort((a, b) => b.timestamp - a.timestamp);
+
   const listingCutoff = new Date(now.getFullYear(), now.getMonth() - 5, 1);
   const saleListings: MarketListing[] = sales
     .filter((item) => new Date(item.year, item.month - 1, item.day) >= listingCutoff)
@@ -157,6 +169,7 @@ export function buildAreaSnapshot({
     chart: chart.length === 1 ? [chart[0], chart[0]] : chart,
     volumeChart,
     rentRatioChart: rentRatioChart.length === 1 ? [rentRatioChart[0], rentRatioChart[0]] : rentRatioChart,
+    saleTransactions,
     listings,
     area: `${latest.area.toFixed(1)}㎡`,
     signals: {
