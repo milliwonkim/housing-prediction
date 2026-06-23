@@ -38,6 +38,16 @@ const forwardFill = (values: Array<number | null>) => {
 const formatDate = (year: number, month: number, day: number) =>
   `${year}. ${String(month).padStart(2, "0")}. ${String(day).padStart(2, "0")}`;
 
+const withUniqueIds = <T>(items: T[], createBaseId: (item: T) => string): string[] => {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const base = createBaseId(item);
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    return count === 0 ? base : `${base}-${count}`;
+  });
+};
+
 export function buildAreaSnapshot({
   areaKey,
   transactions,
@@ -114,44 +124,69 @@ export function buildAreaSnapshot({
     };
   }
 
-  const saleTransactions = sales
-    .map((item) => ({
-      id: `sale-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.floor}-${item.amount}`,
-      amount: item.amount,
-      priceLabel: formatAmount(item.amount),
-      area: item.area,
-      floor: item.floor,
-      date: formatDate(item.year, item.month, item.day),
-      timestamp: new Date(item.year, item.month - 1, item.day).getTime(),
-    }))
-    .sort((a, b) => b.timestamp - a.timestamp);
+  const sortedSales = [...sales].sort(
+    (a, b) =>
+      new Date(b.year, b.month - 1, b.day).getTime() - new Date(a.year, a.month - 1, a.day).getTime()
+      || b.amount - a.amount
+      || b.floor - a.floor
+      || b.area - a.area,
+  );
+  const saleTransactionIds = withUniqueIds(
+    sortedSales,
+    (item) =>
+      `sale-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.floor}-${item.amount}-${item.area}`,
+  );
+  const saleTransactions = sortedSales.map((item, index) => ({
+    id: saleTransactionIds[index]!,
+    amount: item.amount,
+    priceLabel: formatAmount(item.amount),
+    area: item.area,
+    floor: item.floor,
+    date: formatDate(item.year, item.month, item.day),
+    timestamp: new Date(item.year, item.month - 1, item.day).getTime(),
+  }));
 
   const listingCutoff = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-  const saleListings: MarketListing[] = sales
-    .filter((item) => new Date(item.year, item.month - 1, item.day) >= listingCutoff)
-    .sort((a, b) => new Date(b.year, b.month - 1, b.day).getTime() - new Date(a.year, a.month - 1, a.day).getTime())
-    .map((item) => ({
-      id: `sale-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.floor}`,
-      dealType: "매매",
-      area: item.area,
-      floor: item.floor,
-      priceLabel: formatAmount(item.amount),
-      date: formatDate(item.year, item.month, item.day),
-    }));
+  const recentSales = sortedSales.filter(
+    (item) => new Date(item.year, item.month - 1, item.day) >= listingCutoff,
+  );
+  const saleListingIds = withUniqueIds(
+    recentSales,
+    (item) =>
+      `sale-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.floor}-${item.amount}-${item.area}`,
+  );
+  const saleListings: MarketListing[] = recentSales.map((item, index) => ({
+    id: saleListingIds[index]!,
+    dealType: "매매",
+    area: item.area,
+    floor: item.floor,
+    priceLabel: formatAmount(item.amount),
+    date: formatDate(item.year, item.month, item.day),
+  }));
 
-  const rentListings: MarketListing[] = rents
+  const recentRents = [...rents]
     .filter((item) => new Date(item.year, item.month - 1, item.day) >= listingCutoff)
-    .sort((a, b) => new Date(b.year, b.month - 1, b.day).getTime() - new Date(a.year, a.month - 1, a.day).getTime())
-    .map((item) => ({
-      id: `rent-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.area}`,
-      dealType: item.monthlyRent > 0 ? "월세" : "전세",
-      area: item.area,
-      floor: item.floor,
-      priceLabel: item.monthlyRent > 0
-        ? `${formatAmount(item.deposit)} / ${item.monthlyRent.toLocaleString("ko-KR")}만`
-        : formatAmount(item.deposit),
-      date: formatDate(item.year, item.month, item.day),
-    }));
+    .sort(
+      (a, b) =>
+        new Date(b.year, b.month - 1, b.day).getTime() - new Date(a.year, a.month - 1, a.day).getTime()
+        || b.deposit - a.deposit
+        || b.area - a.area,
+    );
+  const rentListingIds = withUniqueIds(
+    recentRents,
+    (item) =>
+      `rent-${areaKey}-${monthKey(item.year, item.month)}-${item.day}-${item.floor}-${item.deposit}-${item.area}`,
+  );
+  const rentListings: MarketListing[] = recentRents.map((item, index) => ({
+    id: rentListingIds[index]!,
+    dealType: item.monthlyRent > 0 ? "월세" : "전세",
+    area: item.area,
+    floor: item.floor,
+    priceLabel: item.monthlyRent > 0
+      ? `${formatAmount(item.deposit)} / ${item.monthlyRent.toLocaleString("ko-KR")}만`
+      : formatAmount(item.deposit),
+    date: formatDate(item.year, item.month, item.day),
+  }));
 
   const listings = [...saleListings, ...rentListings]
     .sort((a, b) => b.date.localeCompare(a.date))
