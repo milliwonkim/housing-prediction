@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import {
   Activity, ArrowDownRight, ArrowRight, ArrowUpRight, Bell, Building2,
@@ -10,7 +10,9 @@ import {
 import { ListingsPanel, TrendChart, type MarketListing } from "@/components/trend-chart";
 import { ChartSeries } from "@/components/chart-series";
 import { openKakaoAddressSearch, type KakaoAddressSelection } from "@/lib/kakao-postcode";
+import { PredictionSummaryCard } from "@/components/prediction-summary-card";
 import { type AreaTypeSnapshot, formatAreaTypeLabel } from "@/lib/area-type";
+import { buildPredictionSummary } from "@/lib/prediction-summary";
 
 type Signal = { label: string; value: string; change: string; score: number; tone: "up" | "down" | "neutral"; icon: typeof Activity; note: string };
 type SupplySignal = { households: number | null; projectCount: number; error?: string };
@@ -374,6 +376,10 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
   const hasExactMatch = apartmentOptions.some((item) => item.name.toLocaleLowerCase("ko") === normalizedQuery);
   const isLoading = loadingApartmentId === apartment.id;
   const isPending = apartment.isCustom && !activeArea;
+  const prediction = useMemo(() => {
+    if (!activeArea) return null;
+    return buildPredictionSummary(activeArea, apartment.supply);
+  }, [activeArea, apartment.supply]);
 
   useEffect(() => {
     if (!detailPanel) return;
@@ -537,6 +543,15 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
         onSelect={setSelectedAreaKey}
       />
 
+      <PredictionSummaryCard
+        apartmentName={apartment.name}
+        areaLabel={activeArea?.label ?? "선택 평형"}
+        prediction={prediction}
+        isPending={isPending}
+        isLoading={isLoading}
+        dataSource={apartment.dataSource}
+      />
+
       <section className="summary-grid">
         <article className="forecast-card"><div className="card-heading"><span>{apartment.dataSource === "molit" ? "실거래 흐름 점수" : "AI 상승 가능성"}</span><button aria-label="산정 기준 도움말"><CircleHelp size={17}/></button></div><div className="forecast-body"><ScoreRing score={activeArea?.score ?? 0}/><div className="forecast-copy"><span className="status"><TrendingUp size={15}/>{activeArea?.forecast ?? "분석 대기"}</span><h2>{apartment.dataSource === "molit" ? "최근 12개월" : "향후 6개월"}<br/><em>{isPending ? "실거래 데이터를 불러오는 중이에요" : apartment.dataSource === "molit" ? "신고 가격 흐름을 반영했어요" : (activeArea?.score ?? 0) >= 80 ? "상승 가능성이 높아요" : "상승 가능성이 우세해요"}</em></h2><p>신뢰도 <b>{activeArea?.confidence ?? "대기"}</b> · {isPending ? "분석 데이터 대기 중" : apartment.dataSource === "molit" ? "국토교통부 신고 자료 기반" : "12개 핵심 지표 분석"}</p></div></div><div className="summary-note"><Sparkles size={16}/><p><b>핵심 요약</b> {isPending ? "선택한 단지의 최근 12개월 실거래가를 조회하고 있어요." : apartment.dataSource === "molit" ? `${activeArea?.label ?? "선택 평형"} 기준으로 매매 실거래가와 거래량을 계산하고, 전세가율과 향후 입주 물량은 보조 지표로 함께 표시합니다.` : "거래 회복과 매물 감소가 동시에 나타나고 있어요. 다만 금리와 주변 공급 계획은 계속 확인하세요."}</p></div></article>
         <article className="price-card"><div className="price-head"><div><span>최근 실거래가 {activeArea ? `· ${activeArea.label}` : ""}</span><h2>{isPending ? (isLoading ? "실거래 조회 중" : "데이터 연결 전") : activeArea?.price}{isPending ? "" : "원"}</h2>{isPending ? <p>{isLoading ? "국토교통부 자료 조회 중이에요." : apartment.dataError || "아직 연결된 실거래가 없어요."}</p> : <p><b><ArrowUpRight size={14}/>{activeArea?.delta}</b> 12개월 첫 거래 대비</p>}</div>{isPending ? null : <Tabs.Root defaultValue="1y"><Tabs.List className="period-tabs"><Tabs.Tab value="3m">3개월</Tabs.Tab><Tabs.Tab value="1y">1년</Tabs.Tab><Tabs.Tab value="3y">3년</Tabs.Tab><Tabs.Indicator/></Tabs.List></Tabs.Root>}</div>{isPending ? <div className="chart-empty"><Building2 size={26}/><b>{isLoading ? "실거래가 조회 중" : "실거래 데이터를 연결하지 못했어요"}</b><span>{apartment.dataError || "공공데이터 API 설정을 확인해 주세요."}</span></div> : <PriceChart values={activeArea?.chart ?? []} labels={apartment.monthLabels}/>}</article>
@@ -605,7 +620,32 @@ export function Dashboard({ loadRealEstateData, initialSelection }: { loadRealEs
     </main>
     <footer><div><a className="brand" href="#"><span><TrendingUp size={17}/></span>집값신호</a><p>데이터로 더 현명한 주거 결정을 돕습니다.</p></div><p>본 서비스의 분석 결과는 투자 권유가 아니며, 실제 가격을 보장하지 않습니다.<br/>직접 검색한 단지는 국토교통부 신고 자료를 사용합니다.</p></footer>
     {detailPanel ? <div className="detail-backdrop" onMouseDown={() => setDetailPanel(null)}><section className="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title" onMouseDown={(event) => event.stopPropagation()}><header><div><small>{apartment.name}{activeArea ? ` · ${activeArea.label}` : ""}</small><h2 id="detail-title">상세 분석</h2></div><button type="button" onClick={() => setDetailPanel(null)} aria-label="닫기"><X size={19}/></button></header>
-      <div className="analysis-detail"><div className="detail-metrics"><span><small>흐름 점수</small><b>{activeArea?.score ?? 0}점</b></span><span><small>최근 실거래가</small><b>{activeArea?.price ?? "—"}{isPending ? "" : "원"}</b></span><span><small>가격 변화</small><b>{activeArea?.delta ?? "—"}</b></span></div><h3>판단 근거</h3><ul>{displaySignals.map((signal) => <li key={signal.label}><b>{signal.label} · {signal.value}</b><span>{signal.note}</span></li>)}</ul><div className="detail-notice">{apartment.dataSource === "molit" ? "흐름 점수는 선택 평형의 최근 12개월 매매 신고가와 거래량으로 계산합니다. 전세가율과 입주 물량은 보조 지표이며 현재 점수에는 포함되지 않습니다." : "현재 선택한 기본 단지는 프로토타입 샘플 데이터로 분석됩니다."}</div></div>
+      <div className="analysis-detail">
+        <div className="detail-metrics">
+          <span><small>{prediction?.direction ?? "상승"} 확률</small><b>{prediction?.probabilityPercent ?? "—"}{prediction ? "%" : ""}</b></span>
+          <span><small>예상 시기</small><b>{prediction?.targetPeriodLabel ?? "—"}</b></span>
+          <span><small>목표 가격</small><b>{prediction?.targetPriceLabel ?? "—"}{prediction ? "원" : ""}</b></span>
+        </div>
+        {prediction ? <p className="detail-prediction">{prediction.sentence}</p> : null}
+        {prediction ? (
+          <>
+            <h3>신고가 돌파 전망</h3>
+            <p className="detail-breakthrough">{prediction.breakthrough.sentence}</p>
+            <h3>통계 근거</h3>
+            <ul className="detail-stats">
+              {prediction.statistics.map((stat) => (
+                <li key={stat.id} className={`detail-stat detail-stat--${stat.impact}`}>
+                  <b>{stat.label} · {stat.value}</b>
+                  <span>{stat.note}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+        <h3>시장 신호</h3>
+        <ul>{displaySignals.map((signal) => <li key={signal.label}><b>{signal.label} · {signal.value}</b><span>{signal.note}</span></li>)}</ul>
+        <div className="detail-notice">{apartment.dataSource === "molit" ? "예측은 최근 12개월 신고가·거래량·전세가율·입주 물량을 통계적으로 반영합니다. 신고가 돌파 시점은 월별 추세선이 12개월 최고가를 넘는 시점으로 추정합니다." : "현재 선택한 기본 단지는 프로토타입 샘플 데이터로 분석됩니다."}</div>
+      </div>
     </section></div> : null}
     {alerted ? <div className="toast"><Check size={16}/><span>가격 신호가 바뀌면 알려드릴게요.</span><button onClick={() => setAlerted(false)} aria-label="닫기"><X size={16}/></button></div> : null}
   </div>;
